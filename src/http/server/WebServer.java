@@ -3,11 +3,12 @@
 package http.server;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -26,10 +27,10 @@ import java.util.HashMap;
  */
 public class WebServer {
 
+	Socket remote;
 	PrintWriter printer;
-	BufferedReader in;
-	OutputStream out;
-	ByteArrayOutputStream dataout;
+	BufferedReader bufReader;
+
 	final String DEFAULT_PAGE = "index.html";
 	final String RES_FOLDER = "../res";
 
@@ -52,23 +53,21 @@ public class WebServer {
 		while(true) {
 			try {
 				// wait for a connection
-				Socket remote = s.accept();
+				remote = s.accept();
 				// remote is now the connected socket
-				in = new BufferedReader(new InputStreamReader(remote.getInputStream()));
-				out = remote.getOutputStream();
+				bufReader = new BufferedReader(new InputStreamReader(remote.getInputStream()));
 				printer = new PrintWriter(remote.getOutputStream());
-				dataout = new ByteArrayOutputStream();
 
-				String httpMethod = in.readLine();
+				String httpMethod = bufReader.readLine();
 				HashMap<String,String> headers = new HashMap<>();
-				String line = in.readLine();
+				String line = bufReader.readLine();
 				while(!line.equals("")) {
 					String[] lsplit = line.split(":",0);
 					headers.put(lsplit[0].toLowerCase(), lsplit[1]);
-					line = in.readLine();
+					line = bufReader.readLine();
 				}
 				analyseHttpRequest(httpMethod, headers);
-				in.close();
+				bufReader.close();
 				printer.close();
 				remote.close();
 			} catch (Exception e) {
@@ -83,6 +82,8 @@ public class WebServer {
 		String method = request[0];
 		String filename = request[1];
 		String httpformat = request[2];
+
+		System.out.println(httpRequest);
 
 		if(filename.equals("/")) filename += DEFAULT_PAGE;
 		File fileRequested = new File(RES_FOLDER + filename);
@@ -101,10 +102,38 @@ public class WebServer {
 					break;
 				case "POST":
 					if(headers.containsKey("content-length")) {
-						String body = readBody(Integer.parseInt(headers.get("content-length").replaceAll(" ", "")));
-						System.out.println(body);
-						sendHeader(httpformat, "200 OK", headersToSend);
-						sendFile(fileRequested);
+						if(headers.get("content-type").contains("multipart/form-data")) {
+							char[] body = readBody(Integer.parseInt(headers.get("content-length").replaceAll(" ", ""))-6);
+							String boundary = headers.get("content-type").split("=", 0)[1];
+							String file = new String(body);
+							file = file.replace("--"+boundary, "");
+							String[] lines = file.split(System.lineSeparator());
+							int i = 1;
+							String fileSendName = "/newFile";
+							while(!lines[i].equals("\r")) {
+								if(lines[i].contains("Content-Disposition")) {
+									fileSendName = lines[i].substring(lines[i].indexOf("filename=\"")+10, lines[i].lastIndexOf("\""));
+								}
+								i++;
+							}
+							String fileSendPath = RES_FOLDER + "/" + fileSendName;
+							BufferedWriter writer = new BufferedWriter(new FileWriter(fileSendPath));
+							while(i < lines.length) {
+								writer.write(lines[i]);
+								writer.write(System.lineSeparator());
+								i++;
+							}
+							writer.close();
+							sendHeader(httpformat, "200 OK", headersToSend);
+							sendFile(fileRequested);
+						}
+						else {
+							char[] body = readBody(Integer.parseInt(headers.get("content-length").replaceAll(" ", "")));
+							System.out.println(new String(body));
+							sendHeader(httpformat, "200 OK", headersToSend);
+							sendFile(fileRequested);
+						}
+						
 					} else {
 						headersToSend.put("Content-type", "text/html");
 						sendHeader(httpformat, "400 BAD REQUEST", headersToSend);
@@ -114,6 +143,10 @@ public class WebServer {
 				case "HEAD":
 					sendHeader(httpformat, "200 OK", headersToSend);
 					break;
+				case "DELETE":
+					if(fileRequested.delete()){
+						sendHeader(httpformat, "200 OK", headersToSend);
+					}
 				default:
 					break;
 			}
@@ -130,8 +163,17 @@ public class WebServer {
 			case "png":
 				type = "image/png";
 				break;
+			case "gif":
+				type = "image/gif";
+				break;
 			case "html":
 				type = "text/html; charset=UTF-8";
+				break;
+			case "css":
+				type = "text/css; charset=UTF-8";
+				break;
+			case "js":
+				type = "application/javascript";
 				break;
 			case "mp4":
 				type = "video/mp4";
@@ -143,11 +185,10 @@ public class WebServer {
 		return type;
 	}
 
-	public String readBody(int length) throws IOException{
-		String body = "";
+	public char[] readBody(int length) throws IOException{
+		char[] body = new char[length];
 		for(int i = 0; i < length; i++) {
-			char character = (char)in.read();
-			body += character;
+			body[i] = (char)bufReader.read();
 		}
 		return body;
 	}
@@ -162,8 +203,9 @@ public class WebServer {
 	}
 
 	public void sendFile(File fileToSend) throws IOException {
+		ByteArrayOutputStream dataout = new ByteArrayOutputStream();
 		dataout.write(Files.readAllBytes(fileToSend.toPath()));
-		dataout.writeTo(out);
+		dataout.writeTo(remote.getOutputStream());
 		dataout.flush();
 	}
 
